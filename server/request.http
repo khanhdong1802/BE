@@ -1,0 +1,40 @@
+//Test tạo tài khoản mới
+POST http://localhost:3000/api/auth/register
+Content-Type: application/json
+
+{
+    "name": "Test User",
+    "email": "test@example.com",
+    "password": "123456"
+}
+
+###
+//Test đăng nhập với tài khoản đã tạo ở trên (nhưng email sai)
+POST http://localhost:3000/api/auth/login
+Content-Type: application/json
+
+{
+    "email": "test2@example.com",
+    "password": "123456"
+}
+
+###
+//Test đăng nhập với tài khoản đã tạo ở trên (nhưng mật khẩu sai)
+POST http://localhost:3000/api/auth/login
+Content-Type: application/json
+
+{
+    "email": "test@example.com",
+    "password": "1234567"
+}
+
+###
+//Test đăng nhập với tài khoản đã tạo ở trên (đúng email và mật khẩu)
+POST http://localhost:3000/api/auth/login
+Content-Type: application/json
+
+{
+    "email": "test@example.com",
+    "password": "123456"
+}
+
