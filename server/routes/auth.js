@@ -3,7 +3,8 @@ const router = express.Router();
 const argon2 = require("argon2");
 const jwt = require("jsonwebtoken");
 const Income = require("../models/Income");
-
+const Withdraw = require("../models/Withdraw");
+const Expense = require("../models/Expense");
 const User = require("../models/User");
 
 // @route   POST /api/auth/register
@@ -136,15 +137,17 @@ router.post("/Income", async (req, res) => {
 const mongoose = require("mongoose");
 const ObjectId = mongoose.Types.ObjectId; // Lấy ObjectId từ mongoose
 
-router.get("/total/:userId", async (req, res) => {
-  const { userId } = req.params;
+router.get("/Income/total/:userId", async (req, res) => {
+  const rawUserId = req.params.userId;
+  const userId = rawUserId.trim(); // loại bỏ \n, khoảng trắng thừa
+
+  console.log("📌 Cleaned userId:", userId);
 
   try {
-    // Sử dụng ObjectId đúng cách
     const total = await Income.aggregate([
       {
         $match: {
-          user_id: ObjectId(userId), // Sử dụng ObjectId thay vì require("mongoose").Types.ObjectId
+          user_id: new mongoose.Types.ObjectId(userId),
           status: "pending",
         },
       },
@@ -153,7 +156,105 @@ router.get("/total/:userId", async (req, res) => {
 
     res.json({ total: total[0]?.totalAmount || 0 });
   } catch (err) {
-    console.error("Lỗi tính tổng thu nhập:", err);
+    console.error("❌ Lỗi tính tổng thu nhập:", err);
+    res.status(500).json({ message: "Lỗi máy chủ" });
+  }
+});
+
+// ========================
+// POST /api/withdraw
+// ========================
+// Đường dẫn này sẽ xử lý việc rút tiền
+router.post("/Withdraw", async (req, res) => {
+  const { user_id, amount, source, note } = req.body;
+
+  if (!user_id || !amount || !source) {
+    return res.status(400).json({ message: "Thiếu thông tin bắt buộc" });
+  }
+
+  try {
+    // Kiểm tra số dư tài khoản trước khi rút
+    const [totalIncome] = await Income.aggregate([
+      {
+        $match: {
+          user_id: new mongoose.Types.ObjectId(user_id),
+          status: "pending",
+        },
+      },
+      {
+        $group: { _id: null, total: { $sum: "$amount" } },
+      },
+    ]);
+
+    const currentBalance = totalIncome?.total || 0;
+
+    if (currentBalance < amount) {
+      return res.status(400).json({ message: "Số dư không đủ để rút" });
+    }
+
+    // Lưu thông tin giao dịch rút tiền
+    const withdraw = new Withdraw({
+      user_id,
+      amount,
+      source,
+      note,
+    });
+
+    await withdraw.save();
+
+    // Cập nhật số dư (trừ số tiền đã rút)
+    await Income.updateOne(
+      { user_id: new mongoose.Types.ObjectId(user_id), status: "pending" },
+      { $inc: { amount: -amount } }
+    );
+
+    res.status(201).json({ message: "Rút tiền thành công", withdraw });
+  } catch (err) {
+    console.error("❌ Lỗi khi rút tiền:", err);
+    res.status(500).json({ message: "Lỗi máy chủ" });
+  }
+});
+
+// ========================
+router.get("/balance/:userId", async (req, res) => {
+  const userId = req.params.userId.trim();
+
+  try {
+    const totalIncome = await Income.aggregate([
+      {
+        $match: {
+          user_id: new mongoose.Types.ObjectId(userId),
+          status: "pending",
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amount" },
+        },
+      },
+    ]);
+
+    const totalExpense = await Expense.aggregate([
+      {
+        $match: {
+          user_id: new mongoose.Types.ObjectId(userId),
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amount" },
+        },
+      },
+    ]);
+
+    const income = totalIncome[0]?.total || 0;
+    const expense = totalExpense[0]?.total || 0;
+
+    res.json({ balance: income - expense });
+  } catch (err) {
+    console.error("❌ Lỗi khi tính balance:", err);
     res.status(500).json({ message: "Lỗi máy chủ" });
   }
 });
