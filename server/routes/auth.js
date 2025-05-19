@@ -7,6 +7,8 @@ const Withdraw = require("../models/Withdraw");
 const Expense = require("../models/Expense");
 const User = require("../models/User");
 const Category = require("../models/Category");
+const Group = require("../models/Group");
+const GroupMember = require("../models/GroupMember");
 // @route   POST /api/auth/register
 // @desc    Register a new user
 // @access  Public
@@ -349,6 +351,58 @@ router.post("/categories", async (req, res) => {
   } catch (err) {
     console.error("❌ Tạo category lỗi:", err);
     res.status(500).json({ message: "Lỗi máy chủ" });
+  }
+});
+
+// POST /api/groups/create
+router.post("/create", async (req, res) => {
+  try {
+    const { name, description, created_by, memberEmail } = req.body;
+
+    if (!name || !created_by) {
+      return res.status(400).json({ message: "Thiếu thông tin bắt buộc" });
+    }
+
+    // Tìm user từ email nếu có
+    let member = null;
+    if (memberEmail) {
+      member = await User.findOne({ email: memberEmail });
+    }
+
+    // Tạo nhóm
+    const newGroup = await Group.create({
+      name,
+      description,
+      created_by,
+    });
+
+    // Danh sách thành viên (gồm admin + thành viên từ email nếu có)
+    const groupMembers = [
+      {
+        group_id: newGroup._id,
+        user_id: created_by,
+        role: "admin",
+        status: "active",
+      },
+    ];
+
+    if (member) {
+      groupMembers.push({
+        group_id: newGroup._id,
+        user_id: member._id,
+        role: "member",
+        status: "active",
+      });
+    }
+
+    await GroupMember.insertMany(groupMembers);
+
+    return res
+      .status(201)
+      .json({ message: "Tạo nhóm thành công", group: newGroup });
+  } catch (err) {
+    console.error("Lỗi tạo nhóm:", err);
+    return res.status(500).json({ message: "Đã có lỗi xảy ra khi tạo nhóm" });
   }
 });
 
