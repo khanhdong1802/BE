@@ -171,10 +171,13 @@ router.post("/Withdraw", async (req, res) => {
   if (!user_id || !amount || !source) {
     return res.status(400).json({ message: "Thiếu thông tin bắt buộc" });
   }
+  if (!mongoose.Types.ObjectId.isValid(user_id)) {
+    return res.status(400).json({ message: "user_id không hợp lệ" });
+  }
 
   try {
     // Kiểm tra số dư tài khoản trước khi rút
-    const [totalIncome] = await Income.aggregate([
+    const totalIncomeArr = await Income.aggregate([
       {
         $match: {
           user_id: new mongoose.Types.ObjectId(user_id),
@@ -185,8 +188,32 @@ router.post("/Withdraw", async (req, res) => {
         $group: { _id: null, total: { $sum: "$amount" } },
       },
     ]);
+    const totalExpenseArr = await Expense.aggregate([
+      {
+        $match: {
+          user_id: new mongoose.Types.ObjectId(user_id),
+        },
+      },
+      {
+        $group: { _id: null, total: { $sum: "$amount" } },
+      },
+    ]);
 
-    const currentBalance = totalIncome?.total || 0;
+    const income = totalIncomeArr[0]?.total || 0;
+    const expense = totalExpenseArr[0]?.total || 0;
+    const currentBalance = income - expense;
+
+    console.log(
+      "income:",
+      income,
+      "expense:",
+      expense,
+      "currentBalance:",
+      currentBalance,
+      "amount:",
+      amount,
+      typeof amount
+    );
 
     if (currentBalance < amount) {
       return res.status(400).json({ message: "Số dư không đủ để rút" });
@@ -202,11 +229,35 @@ router.post("/Withdraw", async (req, res) => {
 
     await withdraw.save();
 
+    const DEFAULT_CATEGORY_ID = "6649e2c8e2b8f2a1b2c3d4e5"; // Thay bằng _id thực tế của category mặc định
+
+    // Thêm bản ghi chi tiêu (Expense) khi rút tiền
+    const newExpense = new Expense({
+      user_id,
+      amount,
+      source,
+      note,
+      created_at: new Date(),
+      date: new Date(),
+      category_id: DEFAULT_CATEGORY_ID,
+    });
+    await newExpense.save();
+
     // Cập nhật số dư (trừ số tiền đã rút)
-    await Income.updateOne(
-      { user_id: new mongoose.Types.ObjectId(user_id), status: "pending" },
-      { $inc: { amount: -amount } }
-    );
+    let remain = amount;
+    const incomes = await Income.find({
+      user_id: new mongoose.Types.ObjectId(user_id),
+      status: "pending",
+      amount: { $gt: 0 },
+    }).sort({ _id: 1 }); // sort để trừ từ khoản cũ nhất
+
+    for (const income of incomes) {
+      if (remain <= 0) break;
+      const deduct = Math.min(income.amount, remain);
+      income.amount -= deduct;
+      remain -= deduct;
+      await income.save();
+    }
 
     res.status(201).json({ message: "Rút tiền thành công", withdraw });
   } catch (err) {
@@ -218,6 +269,8 @@ router.post("/Withdraw", async (req, res) => {
 // ========================
 router.get("/balance/:userId", async (req, res) => {
   const userId = req.params.userId.trim();
+
+  console.log("userId nhận được:", userId);
 
   try {
     const totalIncome = await Income.aggregate([
