@@ -9,6 +9,7 @@ const User = require("../models/User");
 const Category = require("../models/Category");
 const Group = require("../models/Group");
 const GroupMember = require("../models/GroupMember");
+const SpendingLimit = require("../models/SpendingLimit");
 // @route   POST /api/auth/register
 // @desc    Register a new user
 // @access  Public
@@ -403,6 +404,93 @@ router.post("/create", async (req, res) => {
   } catch (err) {
     console.error("Lỗi tạo nhóm:", err);
     return res.status(500).json({ message: "Đã có lỗi xảy ra khi tạo nhóm" });
+  }
+});
+
+//tìm kiếm người dùng theo email
+router.get("/search", async (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q) return res.status(400).json({ message: "Thiếu từ khóa tìm kiếm" });
+
+    const users = await User.find({
+      email: { $regex: q, $options: "i" },
+    }).limit(5); // Giới hạn số gợi ý
+
+    res.json(users);
+  } catch (err) {
+    console.error("Lỗi tìm kiếm người dùng:", err);
+    res.status(500).json({ message: "Lỗi server khi tìm người dùng" });
+  }
+});
+
+/* =====================================================
+   POST /api/auth/spending-limits
+   Tạo hạn mức mới
+=====================================================*/
+router.post("/spending-limits", async (req, res) => {
+  const { user_id, amount, months, note } = req.body;
+
+  if (!user_id || !amount) {
+    return res.status(400).json({ message: "Thiếu user_id hoặc amount" });
+  }
+
+  try {
+    // khi tạo mới → vô hiệu hoá hạn mức active cũ (nếu có)
+    await SpendingLimit.updateMany(
+      { user_id, active: true },
+      { $set: { active: false } }
+    );
+
+    const startDate = new Date();
+    const endDate = new Date();
+    endDate.setMonth(endDate.getMonth() + (months || 1)); // mặc định 1 tháng
+
+    const limit = new SpendingLimit({
+      user_id,
+      amount,
+      months: months || 1,
+      note,
+      start_date: startDate,
+      end_date: endDate,
+      active: true,
+    });
+
+    await limit.save();
+    res.status(201).json(limit);
+  } catch (err) {
+    console.error("❌ Lỗi tạo SpendingLimit:", err);
+    res.status(500).json({ message: "Lỗi server" });
+  }
+});
+
+/* =====================================================
+   GET /api/auth/spending-limits/:userId/current
+   Lấy hạn mức đang active của user
+=====================================================*/
+router.get("/spending-limits/:userId/current", async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const current = await SpendingLimit.findOne({
+      user_id: userId,
+      active: true,
+    });
+    res.json(current || { message: "Chưa thiết lập hạn mức" });
+  } catch (err) {
+    res.status(500).json({ message: "Lỗi server" });
+  }
+});
+
+/* (tuỳ chọn) Lấy history */
+router.get("/spending-limits/:userId/history", async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const history = await SpendingLimit.find({ user_id: userId }).sort({
+      start_date: -1,
+    });
+    res.json(history);
+  } catch (err) {
+    res.status(500).json({ message: "Lỗi server" });
   }
 });
 
