@@ -406,6 +406,27 @@ router.post("/create", async (req, res) => {
     return res.status(500).json({ message: "Đã có lỗi xảy ra khi tạo nhóm" });
   }
 });
+// GET /api/auth/groups?userId=...
+//Lấy danh sách nhóm mà user là thành viên
+router.get("/groups", async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) {
+      return res.status(400).json({ message: "Thiếu userId" });
+    }
+
+    // Lấy các group mà user là thành viên
+    const groupMembers = await GroupMember.find({ user_id: userId });
+    const groupIds = groupMembers.map((gm) => gm.group_id);
+
+    const groups = await Group.find({ _id: { $in: groupIds } });
+
+    return res.json({ groups });
+  } catch (err) {
+    console.error("Lỗi lấy danh sách nhóm:", err);
+    return res.status(500).json({ message: "Đã có lỗi xảy ra khi lấy nhóm" });
+  }
+});
 
 //tìm kiếm người dùng theo email
 router.get("/search", async (req, res) => {
