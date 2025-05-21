@@ -10,6 +10,7 @@ const Category = require("../models/Category");
 const Group = require("../models/Group");
 const GroupMember = require("../models/GroupMember");
 const SpendingLimit = require("../models/SpendingLimit");
+
 // @route   POST /api/auth/register
 // @desc    Register a new user
 // @access  Public
@@ -169,7 +170,7 @@ router.get("/Income/total/:userId", async (req, res) => {
 // ========================
 // Đường dẫn này sẽ xử lý việc rút tiền
 router.post("/Withdraw", async (req, res) => {
-  const { user_id, amount, source, note } = req.body;
+  const { user_id, amount, source, note, category_id } = req.body;
 
   if (!user_id || !amount || !source) {
     return res.status(400).json({ message: "Thiếu thông tin bắt buộc" });
@@ -206,18 +207,6 @@ router.post("/Withdraw", async (req, res) => {
     const expense = totalExpenseArr[0]?.total || 0;
     const currentBalance = income - expense;
 
-    console.log(
-      "income:",
-      income,
-      "expense:",
-      expense,
-      "currentBalance:",
-      currentBalance,
-      "amount:",
-      amount,
-      typeof amount
-    );
-
     if (currentBalance < amount) {
       return res.status(400).json({ message: "Số dư không đủ để rút" });
     }
@@ -228,11 +217,12 @@ router.post("/Withdraw", async (req, res) => {
       amount,
       source,
       note,
+      category_id: category_id
+        ? new mongoose.Types.ObjectId(category_id)
+        : undefined,
     });
 
     await withdraw.save();
-
-    const DEFAULT_CATEGORY_ID = "6649e2c8e2b8f2a1b2c3d4e5"; // Thay bằng _id thực tế của category mặc định
 
     // Thêm bản ghi chi tiêu (Expense) khi rút tiền
     const newExpense = new Expense({
@@ -242,9 +232,10 @@ router.post("/Withdraw", async (req, res) => {
       note,
       created_at: new Date(),
       date: new Date(),
-      category_id: DEFAULT_CATEGORY_ID,
+      category_id: category_id
+        ? new mongoose.Types.ObjectId(category_id)
+        : undefined,
     });
-    await newExpense.save();
 
     // Cập nhật số dư (trừ số tiền đã rút)
     let remain = amount;
@@ -355,57 +346,6 @@ router.post("/categories", async (req, res) => {
   }
 });
 
-// POST /api/groups/create
-router.post("/create", async (req, res) => {
-  try {
-    const { name, description, created_by, memberEmail } = req.body;
-
-    if (!name || !created_by) {
-      return res.status(400).json({ message: "Thiếu thông tin bắt buộc" });
-    }
-
-    // Tìm user từ email nếu có
-    let member = null;
-    if (memberEmail) {
-      member = await User.findOne({ email: memberEmail });
-    }
-
-    // Tạo nhóm
-    const newGroup = await Group.create({
-      name,
-      description,
-      created_by,
-    });
-
-    // Danh sách thành viên (gồm admin + thành viên từ email nếu có)
-    const groupMembers = [
-      {
-        group_id: newGroup._id,
-        user_id: created_by,
-        role: "admin",
-        status: "active",
-      },
-    ];
-
-    if (member) {
-      groupMembers.push({
-        group_id: newGroup._id,
-        user_id: member._id,
-        role: "member",
-        status: "active",
-      });
-    }
-
-    await GroupMember.insertMany(groupMembers);
-
-    return res
-      .status(201)
-      .json({ message: "Tạo nhóm thành công", group: newGroup });
-  } catch (err) {
-    console.error("Lỗi tạo nhóm:", err);
-    return res.status(500).json({ message: "Đã có lỗi xảy ra khi tạo nhóm" });
-  }
-});
 // GET /api/auth/groups?userId=...
 //Lấy danh sách nhóm mà user là thành viên
 router.get("/groups", async (req, res) => {
