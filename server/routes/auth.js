@@ -427,7 +427,17 @@ router.get("/groups", async (req, res) => {
     return res.status(500).json({ message: "Đã có lỗi xảy ra khi lấy nhóm" });
   }
 });
-
+// GET /api/groups/:id
+router.get("/:id", async (req, res) => {
+  try {
+    const group = await Group.findById(req.params.id);
+    if (!group) return res.status(404).json({ message: "Không tìm thấy nhóm" });
+    res.json(group);
+  } catch (err) {
+    console.error("Lỗi lấy nhóm:", err);
+    res.status(500).json({ message: "Đã có lỗi xảy ra khi lấy nhóm" });
+  }
+});
 //tìm kiếm người dùng theo email
 router.get("/search", async (req, res) => {
   try {
