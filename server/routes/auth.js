@@ -141,7 +141,7 @@ router.post("/Income", async (req, res) => {
 const mongoose = require("mongoose");
 const ObjectId = mongoose.Types.ObjectId; // Lấy ObjectId từ mongoose
 
-router.get("/Income/total/:userId", async (req, res) => {
+router.get("/income/total/:userId", async (req, res) => {
   const rawUserId = req.params.userId;
   const userId = rawUserId.trim(); // loại bỏ \n, khoảng trắng thừa
 
