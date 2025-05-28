@@ -10,10 +10,16 @@ const Category = require("../models/Category");
 const Group = require("../models/Group");
 const GroupMember = require("../models/GroupMember");
 const SpendingLimit = require("../models/SpendingLimit");
+const GroupContribution = require("../models/GroupContribution");
+const GroupExpense = require("../models/GroupExpense");
+const GroupFund = require("../models/GroupFund");
+function isValidId(id) {
+  return mongoose.Types.ObjectId.isValid(id);
+}
 
 // @route   POST /api/auth/register
 // @desc    Register a new user
-// @access  Public
+// @access  Publiczz
 router.post("/register", async (req, res) => {
   const { name, email, password } = req.body;
 
@@ -169,6 +175,7 @@ router.get("/income/total/:userId", async (req, res) => {
 // POST /api/withdraw
 // ========================
 // Đường dẫn này sẽ xử lý việc rút tiền
+// ...existing code...
 router.post("/Withdraw", async (req, res) => {
   const { user_id, amount, source, note, category_id } = req.body;
 
@@ -177,6 +184,11 @@ router.post("/Withdraw", async (req, res) => {
   }
   if (!mongoose.Types.ObjectId.isValid(user_id)) {
     return res.status(400).json({ message: "user_id không hợp lệ" });
+  }
+
+  const amountNum = Number(amount);
+  if (isNaN(amountNum) || amountNum <= 0) {
+    return res.status(400).json({ message: "Số tiền không hợp lệ" });
   }
 
   try {
@@ -207,14 +219,14 @@ router.post("/Withdraw", async (req, res) => {
     const expense = totalExpenseArr[0]?.total || 0;
     const currentBalance = income - expense;
 
-    if (currentBalance < amount) {
+    if (currentBalance < amountNum) {
       return res.status(400).json({ message: "Số dư không đủ để rút" });
     }
 
     // Lưu thông tin giao dịch rút tiền
     const withdraw = new Withdraw({
       user_id,
-      amount,
+      amount: amountNum,
       source,
       note,
       category_id: category_id
@@ -227,7 +239,7 @@ router.post("/Withdraw", async (req, res) => {
     // Thêm bản ghi chi tiêu (Expense) khi rút tiền
     const newExpense = new Expense({
       user_id,
-      amount,
+      amount: amountNum,
       source,
       note,
       created_at: new Date(),
@@ -237,8 +249,10 @@ router.post("/Withdraw", async (req, res) => {
         : undefined,
     });
 
+    await newExpense.save(); // <--- BỔ SUNG DÒNG NÀY
+
     // Cập nhật số dư (trừ số tiền đã rút)
-    let remain = amount;
+    let remain = amountNum;
     const incomes = await Income.find({
       user_id: new mongoose.Types.ObjectId(user_id),
       status: "pending",
@@ -367,17 +381,7 @@ router.get("/groups", async (req, res) => {
     return res.status(500).json({ message: "Đã có lỗi xảy ra khi lấy nhóm" });
   }
 });
-// GET /api/groups/:id
-router.get("/:id", async (req, res) => {
-  try {
-    const group = await Group.findById(req.params.id);
-    if (!group) return res.status(404).json({ message: "Không tìm thấy nhóm" });
-    res.json(group);
-  } catch (err) {
-    console.error("Lỗi lấy nhóm:", err);
-    res.status(500).json({ message: "Đã có lỗi xảy ra khi lấy nhóm" });
-  }
-});
+
 //tìm kiếm người dùng theo email
 router.get("/search", async (req, res) => {
   try {
@@ -472,6 +476,7 @@ router.put("/update/:id", async (req, res) => {
     const { name, email, password } = req.body;
     const updateData = { name, email };
 
+<<<<<<< HEAD
     // Nếu có mật khẩu mới thì mã hóa rồi cập nhật
     if (password && password.trim() !== "") {
       updateData.password = await argon2.hash(password);
@@ -508,4 +513,291 @@ router.put("/update/:id", async (req, res) => {
     res.status(500).json({ message: "Có lỗi xảy ra khi cập nhật" });
   }
 });
+=======
+/* =========================================================
+   GROUP CONTRIBUTION
+========================================================= */
+// POST /api/auth/group-contributions  ==> nộp tiền vào quỹ nhóm (tạo quỹ nếu chưa có)
+router.post("/group-contributions", async (req, res) => {
+  try {
+    const {
+      group_id, // ID nhóm
+      fund_name, // Tên quỹ nhập tay từ FE
+      amount,
+      payment_method = "cash",
+      member_id, // ID người nộp tiền
+      description = "", // Mô tả quỹ (tùy chọn)
+      end_date = null, // Ngày kết thúc quỹ (tùy chọn)
+      purpose = "", // Mục đích quỹ (tùy chọn)
+    } = req.body;
+
+    // Validate
+    if (
+      !isValidId(group_id) ||
+      !isValidId(member_id) ||
+      !fund_name ||
+      !amount ||
+      amount <= 0
+    ) {
+      return res.status(400).json({ error: "Thiếu hoặc sai thông tin" });
+    }
+
+    // 1. Tìm hoặc tạo quỹ nhóm theo tên (fund_name) và group_id
+    let fund = await GroupFund.findOne({ group_id, name: fund_name });
+    if (!fund) {
+      fund = await GroupFund.create({
+        group_id,
+        name: fund_name,
+        description,
+        end_date,
+        purpose,
+      });
+    }
+
+    // 2. Lưu contribution vào quỹ vừa tìm/đã tạo
+    const contribution = await GroupContribution.create({
+      fund_id: fund._id,
+      member_id,
+      amount,
+      payment_method,
+    });
+
+    // Trừ số dư cá nhân: tạo bản ghi âm trong Income
+    await Income.create({
+      user_id: member_id,
+      amount: -amount,
+      source: "group_contribution",
+      received_date: new Date(),
+      note: `Nạp vào quỹ nhóm "${fund.name}"`,
+      status: "pending",
+    });
+
+    res.status(201).json({ contribution, fund });
+  } catch (err) {
+    console.error("❌ Lỗi tạo contribution:", err);
+    res.status(500).json({ error: "Lỗi máy chủ" });
+  }
+});
+
+// PATCH /api/auth/group-contributions/:id/status  ==> xác nhận / từ chối
+router.patch("/group-contributions/:id/status", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status = "confirmed" } = req.body; // confirmed | rejected
+
+    if (!isValidId(id) || !["confirmed", "rejected"].includes(status)) {
+      return res.status(400).json({ error: "Tham số không hợp lệ" });
+    }
+
+    const updated = await GroupContribution.findByIdAndUpdate(
+      id,
+      { status },
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ error: "Không tìm thấy" });
+
+    res.json(updated);
+  } catch (err) {
+    console.error("❌ Lỗi cập nhật contribution:", err);
+    res.status(500).json({ error: "Lỗi máy chủ" });
+  }
+});
+
+/* =========================================================
+   GROUP EXPENSE
+========================================================= */
+// POST /api/auth/group-expenses  ==> tạo chi tiêu nhóm, trừ vào số dư cá nhân
+router.post("/group-expenses", async (req, res) => {
+  try {
+    const {
+      fund_id,
+      amount,
+      date = new Date(),
+      description = "",
+      category_id,
+      receipt_image = "",
+    } = req.body;
+    const member_id = req.user?._id; // người thực hiện
+
+    // Validate
+    if (
+      !isValidId(fund_id) ||
+      !isValidId(category_id) ||
+      !isValidId(member_id)
+    ) {
+      return res.status(400).json({ error: "ID không hợp lệ" });
+    }
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: "Số tiền không hợp lệ" });
+    }
+
+    /* ----- Kiểm tra số dư cá nhân trước khi chi ----- */
+    const totalIncome = await Income.aggregate([
+      {
+        $match: {
+          user_id: new mongoose.Types.ObjectId(member_id),
+          status: "pending", // thu nhập còn khả dụng
+        },
+      },
+      { $group: { _id: null, totalAmount: { $sum: "$amount" } } },
+    ]);
+    const personalBalance = totalIncome[0]?.totalAmount || 0;
+
+    if (personalBalance < amount) {
+      return res
+        .status(400)
+        .json({ error: "Số dư cá nhân không đủ để chi tiêu" });
+    }
+
+    /* ----- Khởi tạo chi tiêu ----- */
+    const expense = await GroupExpense.create({
+      fund_id,
+      member_id,
+      amount,
+      date,
+      description,
+      category_id,
+      receipt_image,
+      approval_status: "pending",
+    });
+
+    // Giảm số dư cá nhân: tạo bản ghi âm (negative) trong Income hoặc Update khác
+    await Income.create({
+      user_id: member_id,
+      amount: -amount,
+      source: "group_expense",
+      received_date: new Date(),
+      note: `Chi cho nhóm #${fund_id}`,
+      status: "pending",
+    });
+
+    res.status(201).json(expense);
+  } catch (err) {
+    console.error("❌ Lỗi tạo expense:", err);
+    res.status(500).json({ error: "Lỗi máy chủ" });
+  }
+});
+
+// PATCH /api/auth/group-expenses/:id/approve  ==> duyệt / từ chối chi tiêu
+router.patch("/group-expenses/:id/approve", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status = "approved" } = req.body; // approved | rejected
+    const approver = req.user?._id;
+
+    if (!isValidId(id) || !["approved", "rejected"].includes(status)) {
+      return res.status(400).json({ error: "Tham số không hợp lệ" });
+    }
+
+    const updated = await GroupExpense.findByIdAndUpdate(
+      id,
+      { approval_status: status, approved_by: approver },
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ error: "Không tìm thấy" });
+
+    res.json(updated);
+  } catch (err) {
+    console.error("❌ Lỗi duyệt expense:", err);
+    res.status(500).json({ error: "Lỗi máy chủ" });
+  }
+});
+
+router.post("/group-funds", async (req, res) => {
+  try {
+    const {
+      group_id,
+      name,
+      description = "",
+      end_date = null,
+      purpose = "",
+    } = req.body;
+
+    if (!isValidId(group_id) || !name) {
+      return res.status(400).json({ error: "Thông tin không hợp lệ" });
+    }
+
+    const newFund = await GroupFund.create({
+      group_id,
+      name,
+      description,
+      end_date,
+      purpose,
+    });
+
+    res.status(201).json(newFund);
+  } catch (err) {
+    console.error("❌ Lỗi tạo quỹ:", err);
+    res.status(500).json({ error: "Lỗi máy chủ" });
+  }
+});
+
+router.get("/group-funds", async (req, res) => {
+  try {
+    const { groupId } = req.query;
+    if (!isValidId(groupId)) {
+      return res.status(400).json({ error: "ID không hợp lệ" });
+    }
+
+    const funds = await GroupFund.find({ group_id: groupId }).sort({
+      created_at: -1,
+    });
+    res.json({ funds });
+  } catch (err) {
+    console.error("❌ Lỗi lấy danh sách quỹ:", err);
+    res.status(500).json({ error: "Lỗi máy chủ" });
+  }
+});
+
+router.get("/group-funds", async (req, res) => {
+  try {
+    const { groupId } = req.query;
+    if (!isValidId(groupId)) {
+      return res.status(400).json({ error: "ID không hợp lệ" });
+    }
+
+    const funds = await GroupFund.find({ group_id: groupId }).sort({
+      created_at: -1,
+    });
+    res.json({ funds });
+  } catch (err) {
+    console.error("❌ Lỗi lấy danh sách quỹ:", err);
+    res.status(500).json({ error: "Lỗi máy chủ" });
+  }
+});
+
+// GET /api/auth/groups/:groupId/balance
+router.get("/groups/:groupId/balance", async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    if (!isValidId(groupId)) {
+      return res.status(400).json({ error: "ID không hợp lệ" });
+    }
+    // Lấy tất cả fund_id của nhóm
+    const funds = await GroupFund.find({ group_id: groupId }).select("_id");
+    const fundIds = funds.map((f) => f._id);
+    const result = await GroupContribution.aggregate([
+      { $match: { fund_id: { $in: fundIds } } },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]);
+    const balance = result[0]?.total || 0;
+    res.json({ balance });
+  } catch (err) {
+    res.status(500).json({ error: "Lỗi máy chủ" });
+  }
+});
+
+// GET /api/groups/:id
+router.get("/:id", async (req, res) => {
+  try {
+    const group = await Group.findById(req.params.id);
+    if (!group) return res.status(404).json({ message: "Không tìm thấy nhóm" });
+    res.json(group);
+  } catch (err) {
+    console.error("Lỗi lấy nhóm:", err);
+    res.status(500).json({ message: "Đã có lỗi xảy ra khi lấy nhóm" });
+  }
+});
+
+>>>>>>> 50c4a08 (group)
 module.exports = router;
