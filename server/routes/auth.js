@@ -475,8 +475,6 @@ router.put("/update/:id", async (req, res) => {
   try {
     const { name, email, password } = req.body;
     const updateData = { name, email };
-
-<<<<<<< HEAD
     // Nếu có mật khẩu mới thì mã hóa rồi cập nhật
     if (password && password.trim() !== "") {
       updateData.password = await argon2.hash(password);
@@ -513,7 +511,7 @@ router.put("/update/:id", async (req, res) => {
     res.status(500).json({ message: "Có lỗi xảy ra khi cập nhật" });
   }
 });
-=======
+
 /* =========================================================
    GROUP CONTRIBUTION
 ========================================================= */
@@ -799,5 +797,4 @@ router.get("/:id", async (req, res) => {
   }
 });
 
->>>>>>> 50c4a08 (group)
 module.exports = router;
