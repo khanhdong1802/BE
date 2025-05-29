@@ -475,6 +475,10 @@ router.put("/update/:id", async (req, res) => {
   try {
     const { name, email, password } = req.body;
     const updateData = { name, email };
+<<<<<<< HEAD
+=======
+
+>>>>>>> e5b2efc (tạm lưu)
     // Nếu có mật khẩu mới thì mã hóa rồi cập nhật
     if (password && password.trim() !== "") {
       updateData.password = await argon2.hash(password);
@@ -482,9 +486,14 @@ router.put("/update/:id", async (req, res) => {
 
     // Kiểm tra email đã tồn tại cho user khác chưa (nếu đổi email)
     if (email) {
-      const existing = await User.findOne({ email, _id: { $ne: req.params.id } });
+      const existing = await User.findOne({
+        email,
+        _id: { $ne: req.params.id },
+      });
       if (existing) {
-        return res.status(400).json({ message: "Email đã được sử dụng bởi tài khoản khác" });
+        return res
+          .status(400)
+          .json({ message: "Email đã được sử dụng bởi tài khoản khác" });
       }
     }
 
