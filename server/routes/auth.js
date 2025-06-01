@@ -249,7 +249,7 @@ router.post("/Withdraw", async (req, res) => {
         : undefined,
     });
 
-    await newExpense.save(); // <--- BỔ SUNG DÒNG NÀY
+    await newExpense.save();
 
     // Cập nhật số dư (trừ số tiền đã rút)
     let remain = amountNum;
@@ -357,6 +357,58 @@ router.post("/categories", async (req, res) => {
   } catch (err) {
     console.error("❌ Tạo category lỗi:", err);
     res.status(500).json({ message: "Lỗi máy chủ" });
+  }
+});
+
+// POST /api/groups/createAdd commentMore actions
+router.post("/create", async (req, res) => {
+  try {
+    const { name, description, created_by, memberEmail } = req.body;
+
+    if (!name || !created_by) {
+      return res.status(400).json({ message: "Thiếu thông tin bắt buộc" });
+    }
+
+    // Tìm user từ email nếu có
+    let member = null;
+    if (memberEmail) {
+      member = await User.findOne({ email: memberEmail });
+    }
+
+    // Tạo nhóm
+    const newGroup = await Group.create({
+      name,
+      description,
+      created_by,
+    });
+
+    // Danh sách thành viên (gồm admin + thành viên từ email nếu có)
+    const groupMembers = [
+      {
+        group_id: newGroup._id,
+        user_id: created_by,
+        role: "admin",
+        status: "active",
+      },
+    ];
+
+    if (member) {
+      groupMembers.push({
+        group_id: newGroup._id,
+        user_id: member._id,
+        role: "member",
+        status: "active",
+      });
+    }
+
+    await GroupMember.insertMany(groupMembers);
+
+    return res
+      .status(201)
+      .json({ message: "Tạo nhóm thành công", group: newGroup });
+  } catch (err) {
+    console.error("Lỗi tạo nhóm:", err);
+    return res.status(500).json({ message: "Đã có lỗi xảy ra khi tạo nhóm" });
   }
 });
 
@@ -482,9 +534,14 @@ router.put("/update/:id", async (req, res) => {
 
     // Kiểm tra email đã tồn tại cho user khác chưa (nếu đổi email)
     if (email) {
-      const existing = await User.findOne({ email, _id: { $ne: req.params.id } });
+      const existing = await User.findOne({
+        email,
+        _id: { $ne: req.params.id },
+      });
       if (existing) {
-        return res.status(400).json({ message: "Email đã được sử dụng bởi tài khoản khác" });
+        return res
+          .status(400)
+          .json({ message: "Email đã được sử dụng bởi tài khoản khác" });
       }
     }
 
@@ -604,75 +661,133 @@ router.patch("/group-contributions/:id/status", async (req, res) => {
 /* =========================================================
    GROUP EXPENSE
 ========================================================= */
-// POST /api/auth/group-expenses  ==> tạo chi tiêu nhóm, trừ vào số dư cá nhân
+// POST /api/auth/group-expenses
 router.post("/group-expenses", async (req, res) => {
   try {
     const {
-      fund_id,
+      fund_id, // ID của quỹ dùng để phân loại (ví dụ: quỹ chung của nhóm)
       amount,
+      user_making_expense_id, // User ID của người dùng đang đăng nhập thực hiện hành động
       date = new Date(),
       description = "",
       category_id,
       receipt_image = "",
     } = req.body;
-    const member_id = req.user?._id; // người thực hiện
 
-    // Validate
+    const numericAmount = Number(amount);
+
+    // --- VALIDATION ---
     if (
       !isValidId(fund_id) ||
-      !isValidId(category_id) ||
-      !isValidId(member_id)
+      !isValidId(user_making_expense_id) ||
+      (category_id && !isValidId(category_id))
     ) {
-      return res.status(400).json({ error: "ID không hợp lệ" });
+      return res.status(400).json({
+        success: false,
+        message: "ID không hợp lệ (quỹ, người dùng, hoặc danh mục).",
+      });
     }
-    if (!amount || amount <= 0) {
-      return res.status(400).json({ error: "Số tiền không hợp lệ" });
-    }
-
-    /* ----- Kiểm tra số dư cá nhân trước khi chi ----- */
-    const totalIncome = await Income.aggregate([
-      {
-        $match: {
-          user_id: new mongoose.Types.ObjectId(member_id),
-          status: "pending", // thu nhập còn khả dụng
-        },
-      },
-      { $group: { _id: null, totalAmount: { $sum: "$amount" } } },
-    ]);
-    const personalBalance = totalIncome[0]?.totalAmount || 0;
-
-    if (personalBalance < amount) {
+    if (isNaN(numericAmount) || numericAmount <= 0) {
       return res
         .status(400)
-        .json({ error: "Số dư cá nhân không đủ để chi tiêu" });
+        .json({ success: false, message: "Số tiền không hợp lệ." });
     }
 
-    /* ----- Khởi tạo chi tiêu ----- */
-    const expense = await GroupExpense.create({
-      fund_id,
-      member_id,
-      amount,
-      date,
-      description,
-      category_id,
-      receipt_image,
-      approval_status: "pending",
+    // --- LẤY GROUP ID TỪ FUND ID ---
+    const fundObjectId = new mongoose.Types.ObjectId(fund_id);
+    const groupFundDoc = await GroupFund.findById(fundObjectId);
+    if (!groupFundDoc) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Quỹ không tồn tại." });
+    }
+    const groupIdForBalanceCheck = groupFundDoc.group_id;
+
+    // --- KIỂM TRA SỐ DƯ TỔNG CỦA NHÓM ---
+    const fundsInGroup = await GroupFund.find({
+      group_id: groupIdForBalanceCheck,
+    }).select("_id");
+    const fundIdsInGroup = fundsInGroup.map((fund) => fund._id);
+
+    let actualGroupBalance = 0;
+    if (fundIdsInGroup.length > 0) {
+      const contributionData = await GroupContribution.aggregate([
+        { $match: { fund_id: { $in: fundIdsInGroup }, status: "pending" } },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]);
+      const totalContributions = contributionData[0]?.total || 0;
+
+      const expenseData = await GroupExpense.aggregate([
+        {
+          $match: {
+            fund_id: { $in: fundIdsInGroup },
+            approval_status: "approved",
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]);
+      const totalExpenses = expenseData[0]?.total || 0;
+      actualGroupBalance = totalContributions - totalExpenses;
+    } else if (numericAmount > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Nhóm này không có quỹ nào để ghi nhận chi tiêu.",
+      });
+    }
+
+    // --- THÊM ĐOẠN CODE KIỂM TRA SỐ DƯ BẠN CUNG CẤP VÀO ĐÂY ---
+    if (actualGroupBalance < numericAmount) {
+      return res.status(400).json({
+        success: false,
+        message: `Số dư tài khoản nhóm không đủ. Hiện có: ${actualGroupBalance.toLocaleString()} đ`,
+      });
+    }
+    // --- KẾT THÚC KIỂM TRA SỐ DƯ NHÓM ---
+
+    // --- TÌM GROUPMEMBER ID CHO BẢN GHI GROUPEXPENSE ---
+    const groupMemberEntry = await GroupMember.findOne({
+      group_id: groupIdForBalanceCheck,
+      user_id: new mongoose.Types.ObjectId(user_making_expense_id),
     });
 
-    // Giảm số dư cá nhân: tạo bản ghi âm (negative) trong Income hoặc Update khác
-    await Income.create({
-      user_id: member_id,
-      amount: -amount,
-      source: "group_expense",
-      received_date: new Date(),
-      note: `Chi cho nhóm #${fund_id}`,
-      status: "pending",
+    if (!groupMemberEntry) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "Người dùng không phải là thành viên của nhóm này hoặc thông tin không chính xác.",
+      });
+    }
+    const memberIdForExpenseRecord = groupMemberEntry._id;
+
+    // --- TẠO BẢN GHI GROUPEXPENSE MỚI ---
+    const newGroupExpense = new GroupExpense({
+      fund_id: fundObjectId,
+      member_id: memberIdForExpenseRecord,
+      amount: numericAmount,
+      date: date,
+      description: description,
+      category_id: category_id
+        ? new mongoose.Types.ObjectId(category_id)
+        : undefined,
+      receipt_image: receipt_image,
+      approval_status: "approved", // Hoặc "pending" nếu bạn có quy trình duyệt
     });
 
-    res.status(201).json(expense);
+    await newGroupExpense.save();
+
+    // Quan trọng: Đảm bảo không có code tạo Income âm cho user_making_expense_id ở đây
+    // để không trừ tiền cá nhân khi chi từ tài khoản nhóm.
+
+    res.status(201).json({
+      success: true,
+      message: "Chi tiêu nhóm đã được tạo và trừ vào tài khoản nhóm",
+      expense: newGroupExpense,
+    });
   } catch (err) {
-    console.error("❌ Lỗi tạo expense:", err);
-    res.status(500).json({ error: "Lỗi máy chủ" });
+    console.error("❌ Lỗi tạo chi tiêu nhóm:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Lỗi máy chủ khi tạo chi tiêu nhóm." });
   }
 });
 
@@ -796,5 +911,149 @@ router.get("/:id", async (req, res) => {
     res.status(500).json({ message: "Đã có lỗi xảy ra khi lấy nhóm" });
   }
 });
+
+// GET /groups/:groupId/actual-balance
+// Lấy số dư thực tế có thể chi tiêu của một quỹ cụ thể
+router.get("/groups/:groupId/actual-balance", async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(groupId)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "ID nhóm không hợp lệ." });
+    }
+    const groupObjectId = new mongoose.Types.ObjectId(groupId);
+
+    // Lấy tất cả các fund_id thuộc nhóm này
+    const fundsInGroup = await GroupFund.find({
+      group_id: groupObjectId,
+    }).select("_id");
+    const fundIdsInGroup = fundsInGroup.map((fund) => fund._id);
+
+    if (fundIdsInGroup.length === 0) {
+      // Nếu nhóm không có quỹ nào, số dư là 0 (hoặc bạn có thể cho phép đóng góp trực tiếp vào nhóm mà không cần quỹ)
+      return res.json({ success: true, balance: 0 });
+    }
+
+    // Tính tổng đóng góp đã xác nhận cho tất cả các quỹ trong nhóm
+    const contributionData = await GroupContribution.aggregate([
+      {
+        $match: {
+          fund_id: { $in: fundIdsInGroup },
+          status: "pending",
+        },
+      },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]);
+    const totalContributions = contributionData[0]?.total || 0;
+
+    // Tính tổng chi tiêu đã duyệt cho tất cả các quỹ trong nhóm
+    const expenseData = await GroupExpense.aggregate([
+      {
+        $match: {
+          fund_id: { $in: fundIdsInGroup },
+          approval_status: "approved",
+        },
+      },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]);
+    const totalExpenses = expenseData[0]?.total || 0;
+
+    const actualGroupBalance = totalContributions - totalExpenses;
+    res.json({ success: true, balance: actualGroupBalance });
+  } catch (err) {
+    console.error("Lỗi khi lấy số dư tổng của nhóm:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Lỗi máy chủ khi tính số dư nhóm." });
+  }
+});
+
+// === API MỚI: LẤY SỐ DƯ CÁ NHÂN THỰC TẾ (THU - CHI) ===
+// GET /api/auth/balance/:userId
+router.get("/balance/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!isValidId(userId)) {
+      return res.status(400).json({ success: false, message: "ID người dùng không hợp lệ." });
+    }
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+
+    // 1. Tính tổng thu nhập dương đã được xác nhận
+    const incomeData = await Income.aggregate([
+      { 
+        $match: { 
+          user_id: userObjectId, 
+          amount: { $gte: 0 }, // Chỉ lấy các khoản thu nhập (dương hoặc bằng 0)
+          status: "confirmed"  // Chỉ tính các khoản đã xác nhận
+        } 
+      },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]);
+    const totalPositiveIncome = incomeData[0]?.total || 0;
+
+    // 2. Tính tổng các khoản chi tiêu cá nhân trực tiếp (từ bảng Expense)
+    // Giả định Expense luôn là số dương và thể hiện một khoản chi
+    const personalExpensesData = await Expense.aggregate([
+      { $match: { user_id: userObjectId } }, // Không cần status nếu mọi Expense đều là đã chi
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]);
+    const totalPersonalExpenses = personalExpensesData[0]?.total || 0;
+    
+    // 3. Tính tổng các khoản tiền cá nhân đã dùng để nạp vào quỹ nhóm
+    // (Đây là các bản ghi Income âm, với source là "group_contribution" và status là "completed" hoặc "confirmed_debit")
+    const contributionsToGroupData = await Income.aggregate([
+        { 
+          $match: { 
+            user_id: userObjectId, 
+            source: "group_contribution", // Hoặc một định danh khác bạn dùng khi nạp tiền vào nhóm
+            amount: { $lt: 0 },          // Chỉ lấy các khoản âm
+            status: "completed"          // Hoặc "confirmed_debit" - trạng thái cho khoản trừ này
+          } 
+        },
+        { $group: { _id: null, total: { $sum: "$amount" } } }, // total này sẽ là số âm
+    ]);
+    // totalContributionsToGroup sẽ là tổng các số âm, ví dụ -50000, -20000.
+    // Hoặc bạn có thể lấy Math.abs() nếu muốn cộng dồn các khoản chi.
+    // Để tính số dư, chúng ta cần giá trị âm này.
+    const totalNegativeAdjustmentsFromGroupContributions = contributionsToGroupData[0]?.total || 0;
+
+    // Tính số dư cuối cùng
+    // Số dư = Tổng thu nhập dương - Tổng chi tiêu cá nhân trực tiếp - Tổng (giá trị tuyệt đối của) các khoản tiền cá nhân nạp vào nhóm
+    // Hoặc: Số dư = Tổng thu nhập dương + (Tổng các khoản Income âm đã completed/confirmed_debit) - Tổng chi tiêu Expense
+    const currentBalance = totalPositiveIncome + totalNegativeAdjustmentsFromGroupContributions - totalPersonalExpenses;
+    
+    console.log(`BALANCE API for ${userId}: PositiveIncome ${totalPositiveIncome}, NegativeAdjustments ${totalNegativeAdjustmentsFromGroupContributions}, PersonalExpenses ${totalPersonalExpenses}, FinalBalance ${currentBalance}`);
+
+    res.json({ success: true, balance: currentBalance });
+
+  } catch (err) {
+    console.error("❌ Lỗi khi tính balance cá nhân:", err);
+    res.status(500).json({ success: false, message: "Lỗi máy chủ khi tính balance cá nhân." });
+  }
+});
+
+// === API LẤY TỔNG CHI TIÊU CÁ NHÂN (Chỉ từ bảng Expense) ===
+// GET /api/auth/expenses/personal/total/:userId
+router.get("/expenses/personal/total/:userId", async (req, res) => {
+    try {
+        const { userId } = req.params;
+        if (!isValidId(userId)) {
+            return res.status(400).json({ success: false, message: "ID người dùng không hợp lệ." });
+        }
+        const userObjectId = new mongoose.Types.ObjectId(userId);
+        const expenseAggregation = await Expense.aggregate([
+            { $match: { user_id: userObjectId } }, // Lấy tất cả chi tiêu cá nhân
+            { $group: { _id: null, total: { $sum: "$amount" } } },
+        ]);
+        const totalUserExpenses = expenseAggregation[0]?.total || 0;
+        res.json({ success: true, total: totalUserExpenses });
+    } catch (err) {
+        console.error("❌ Lỗi tính tổng chi tiêu cá nhân:", err);
+        res.status(500).json({ success: false, message: "Lỗi máy chủ khi tính tổng chi tiêu cá nhân." });
+    }
+});
+
+
 
 module.exports = router;
