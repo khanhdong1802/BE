@@ -359,7 +359,57 @@ router.post("/categories", async (req, res) => {
     res.status(500).json({ message: "Lỗi máy chủ" });
   }
 });
+// POST /api/groups/createAdd commentMore actions
+router.post("/create", async (req, res) => {
+  try {
+    const { name, description, created_by, memberEmail } = req.body;
 
+    if (!name || !created_by) {
+      return res.status(400).json({ message: "Thiếu thông tin bắt buộc" });
+    }
+
+    // Tìm user từ email nếu có
+    let member = null;
+    if (memberEmail) {
+      member = await User.findOne({ email: memberEmail });
+    }
+
+    // Tạo nhóm
+    const newGroup = await Group.create({
+      name,
+      description,
+      created_by,
+    });
+
+    // Danh sách thành viên (gồm admin + thành viên từ email nếu có)
+    const groupMembers = [
+      {
+        group_id: newGroup._id,
+        user_id: created_by,
+        role: "admin",
+        status: "active",
+      },
+    ];
+
+    if (member) {
+      groupMembers.push({
+        group_id: newGroup._id,
+        user_id: member._id,
+        role: "member",
+        status: "active",
+      });
+    }
+
+    await GroupMember.insertMany(groupMembers);
+
+    return res
+      .status(201)
+      .json({ message: "Tạo nhóm thành công", group: newGroup });
+  } catch (err) {
+    console.error("Lỗi tạo nhóm:", err);
+    return res.status(500).json({ message: "Đã có lỗi xảy ra khi tạo nhóm" });
+  }
+});
 // GET /api/auth/groups?userId=...
 //Lấy danh sách nhóm mà user là thành viên
 router.get("/groups", async (req, res) => {
@@ -475,10 +525,7 @@ router.put("/update/:id", async (req, res) => {
   try {
     const { name, email, password } = req.body;
     const updateData = { name, email };
-<<<<<<< HEAD
-=======
 
->>>>>>> e5b2efc (tạm lưu)
     // Nếu có mật khẩu mới thì mã hóa rồi cập nhật
     if (password && password.trim() !== "") {
       updateData.password = await argon2.hash(password);
