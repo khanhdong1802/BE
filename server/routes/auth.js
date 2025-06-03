@@ -13,6 +13,7 @@ const SpendingLimit = require("../models/SpendingLimit");
 const GroupContribution = require("../models/GroupContribution");
 const GroupExpense = require("../models/GroupExpense");
 const GroupFund = require("../models/GroupFund");
+const TransactionHistory = require("../models/TransactionHistory");
 function isValidId(id) {
   return mongoose.Types.ObjectId.isValid(id);
 }
@@ -134,6 +135,17 @@ router.post("/Income", async (req, res) => {
     });
 
     await income.save();
+
+    // Thêm vào lịch sử giao dịch
+    await TransactionHistory.create({
+      transaction_type: "income",
+      amount,
+      transaction_date: received_date,
+      description: note || source,
+      user_id,
+      status: status || "completed",
+    });
+
     res.status(201).json({ message: "Thu nhập đã được lưu", income });
   } catch (err) {
     console.error("❌ Lỗi khi lưu thu nhập:", err);
@@ -236,7 +248,6 @@ router.post("/Withdraw", async (req, res) => {
 
     await withdraw.save();
 
-    // Thêm bản ghi chi tiêu (Expense) khi rút tiền
     const newExpense = new Expense({
       user_id,
       amount: amountNum,
@@ -251,21 +262,15 @@ router.post("/Withdraw", async (req, res) => {
 
     await newExpense.save();
 
-    // Cập nhật số dư (trừ số tiền đã rút)
-    let remain = amountNum;
-    const incomes = await Income.find({
-      user_id: new mongoose.Types.ObjectId(user_id),
-      status: "pending",
-      amount: { $gt: 0 },
-    }).sort({ _id: 1 }); // sort để trừ từ khoản cũ nhất
-
-    for (const income of incomes) {
-      if (remain <= 0) break;
-      const deduct = Math.min(income.amount, remain);
-      income.amount -= deduct;
-      remain -= deduct;
-      await income.save();
-    }
+    // Ghi vào lịch sử giao dịch
+    await TransactionHistory.create({
+      transaction_type: "expense",
+      amount: amountNum,
+      transaction_date: new Date(),
+      description: note || source || "Rút tiền",
+      user_id,
+      status: "completed",
+    });
 
     res.status(201).json({ message: "Rút tiền thành công", withdraw });
   } catch (err) {
@@ -316,46 +321,6 @@ router.get("/balance/:userId", async (req, res) => {
     res.json({ balance: income - expense });
   } catch (err) {
     console.error("❌ Lỗi khi tính balance:", err);
-    res.status(500).json({ message: "Lỗi máy chủ" });
-  }
-});
-
-/* ------------------------
-   GET /api/auth/categories
-   Lấy toàn bộ danh mục
--------------------------*/
-router.get("/categories", async (req, res) => {
-  try {
-    const categories = await Category.find().sort({ name: 1 }); // A-Z
-    res.json(categories);
-  } catch (err) {
-    console.error("❌ Lấy categories lỗi:", err);
-    res.status(500).json({ message: "Lỗi máy chủ" });
-  }
-});
-
-/* ------------------------
-   POST /api/auth/categories
-   Tạo mới một danh mục
--------------------------*/
-router.post("/categories", async (req, res) => {
-  const { name, description, icon, parent_category_id } = req.body;
-  if (!name) return res.status(400).json({ message: "Thiếu name" });
-
-  try {
-    const newCat = new Category({
-      name,
-      description,
-      icon,
-      parent_category_id: parent_category_id
-        ? new mongoose.Types.ObjectId(parent_category_id)
-        : null,
-    });
-
-    await newCat.save();
-    res.status(201).json(newCat);
-  } catch (err) {
-    console.error("❌ Tạo category lỗi:", err);
     res.status(500).json({ message: "Lỗi máy chủ" });
   }
 });
@@ -626,7 +591,16 @@ router.post("/group-contributions", async (req, res) => {
       note: `Nạp vào quỹ nhóm "${fund.name}"`,
       status: "pending",
     });
-
+    // Thêm vào lịch sử giao dịch
+    await TransactionHistory.create({
+      transaction_type: "contribution",
+      amount,
+      transaction_date: new Date(),
+      description: `Nạp vào quỹ nhóm "${fund.name}"`,
+      user_id: member_id,
+      group_id: group_id,
+      status: "completed",
+    });
     res.status(201).json({ contribution, fund });
   } catch (err) {
     console.error("❌ Lỗi tạo contribution:", err);
@@ -675,6 +649,12 @@ router.post("/group-expenses", async (req, res) => {
     } = req.body;
 
     const numericAmount = Number(amount);
+    console.log(
+      "amount nhận từ FE:",
+      amount,
+      "→ numericAmount:",
+      numericAmount
+    );
 
     // --- VALIDATION ---
     if (
@@ -774,6 +754,17 @@ router.post("/group-expenses", async (req, res) => {
     });
 
     await newGroupExpense.save();
+
+    // Ghi vào lịch sử giao dịch nhóm
+    await TransactionHistory.create({
+      transaction_type: "expense",
+      amount: numericAmount,
+      transaction_date: date,
+      description: description || "Chi tiêu nhóm",
+      user_id: user_making_expense_id,
+      group_id: groupIdForBalanceCheck,
+      status: "completed",
+    });
 
     // Quan trọng: Đảm bảo không có code tạo Income âm cho user_making_expense_id ở đây
     // để không trừ tiền cá nhân khi chi từ tài khoản nhóm.
@@ -960,7 +951,11 @@ router.get("/groups/:groupId/actual-balance", async (req, res) => {
     const totalExpenses = expenseData[0]?.total || 0;
 
     const actualGroupBalance = totalContributions - totalExpenses;
-    res.json({ success: true, balance: actualGroupBalance });
+    res.json({
+      success: true,
+      balance: actualGroupBalance,
+      totalSpent: totalExpenses,
+    });
   } catch (err) {
     console.error("Lỗi khi lấy số dư tổng của nhóm:", err);
     res
@@ -975,18 +970,20 @@ router.get("/balance/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     if (!isValidId(userId)) {
-      return res.status(400).json({ success: false, message: "ID người dùng không hợp lệ." });
+      return res
+        .status(400)
+        .json({ success: false, message: "ID người dùng không hợp lệ." });
     }
     const userObjectId = new mongoose.Types.ObjectId(userId);
 
     // 1. Tính tổng thu nhập dương đã được xác nhận
     const incomeData = await Income.aggregate([
-      { 
-        $match: { 
-          user_id: userObjectId, 
+      {
+        $match: {
+          user_id: userObjectId,
           amount: { $gte: 0 }, // Chỉ lấy các khoản thu nhập (dương hoặc bằng 0)
-          status: "confirmed"  // Chỉ tính các khoản đã xác nhận
-        } 
+          status: "confirmed", // Chỉ tính các khoản đã xác nhận
+        },
       },
       { $group: { _id: null, total: { $sum: "$amount" } } },
     ]);
@@ -999,61 +996,72 @@ router.get("/balance/:userId", async (req, res) => {
       { $group: { _id: null, total: { $sum: "$amount" } } },
     ]);
     const totalPersonalExpenses = personalExpensesData[0]?.total || 0;
-    
+
     // 3. Tính tổng các khoản tiền cá nhân đã dùng để nạp vào quỹ nhóm
     // (Đây là các bản ghi Income âm, với source là "group_contribution" và status là "completed" hoặc "confirmed_debit")
     const contributionsToGroupData = await Income.aggregate([
-        { 
-          $match: { 
-            user_id: userObjectId, 
-            source: "group_contribution", // Hoặc một định danh khác bạn dùng khi nạp tiền vào nhóm
-            amount: { $lt: 0 },          // Chỉ lấy các khoản âm
-            status: "completed"          // Hoặc "confirmed_debit" - trạng thái cho khoản trừ này
-          } 
+      {
+        $match: {
+          user_id: userObjectId,
+          source: "group_contribution", // Hoặc một định danh khác bạn dùng khi nạp tiền vào nhóm
+          amount: { $lt: 0 }, // Chỉ lấy các khoản âm
+          status: "completed", // Hoặc "confirmed_debit" - trạng thái cho khoản trừ này
         },
-        { $group: { _id: null, total: { $sum: "$amount" } } }, // total này sẽ là số âm
+      },
+      { $group: { _id: null, total: { $sum: "$amount" } } }, // total này sẽ là số âm
     ]);
     // totalContributionsToGroup sẽ là tổng các số âm, ví dụ -50000, -20000.
     // Hoặc bạn có thể lấy Math.abs() nếu muốn cộng dồn các khoản chi.
     // Để tính số dư, chúng ta cần giá trị âm này.
-    const totalNegativeAdjustmentsFromGroupContributions = contributionsToGroupData[0]?.total || 0;
+    const totalNegativeAdjustmentsFromGroupContributions =
+      contributionsToGroupData[0]?.total || 0;
 
     // Tính số dư cuối cùng
     // Số dư = Tổng thu nhập dương - Tổng chi tiêu cá nhân trực tiếp - Tổng (giá trị tuyệt đối của) các khoản tiền cá nhân nạp vào nhóm
     // Hoặc: Số dư = Tổng thu nhập dương + (Tổng các khoản Income âm đã completed/confirmed_debit) - Tổng chi tiêu Expense
-    const currentBalance = totalPositiveIncome + totalNegativeAdjustmentsFromGroupContributions - totalPersonalExpenses;
-    
-    console.log(`BALANCE API for ${userId}: PositiveIncome ${totalPositiveIncome}, NegativeAdjustments ${totalNegativeAdjustmentsFromGroupContributions}, PersonalExpenses ${totalPersonalExpenses}, FinalBalance ${currentBalance}`);
+    const currentBalance =
+      totalPositiveIncome +
+      totalNegativeAdjustmentsFromGroupContributions -
+      totalPersonalExpenses;
+
+    console.log(
+      `BALANCE API for ${userId}: PositiveIncome ${totalPositiveIncome}, NegativeAdjustments ${totalNegativeAdjustmentsFromGroupContributions}, PersonalExpenses ${totalPersonalExpenses}, FinalBalance ${currentBalance}`
+    );
 
     res.json({ success: true, balance: currentBalance });
-
   } catch (err) {
     console.error("❌ Lỗi khi tính balance cá nhân:", err);
-    res.status(500).json({ success: false, message: "Lỗi máy chủ khi tính balance cá nhân." });
+    res.status(500).json({
+      success: false,
+      message: "Lỗi máy chủ khi tính balance cá nhân.",
+    });
   }
 });
 
 // === API LẤY TỔNG CHI TIÊU CÁ NHÂN (Chỉ từ bảng Expense) ===
 // GET /api/auth/expenses/personal/total/:userId
 router.get("/expenses/personal/total/:userId", async (req, res) => {
-    try {
-        const { userId } = req.params;
-        if (!isValidId(userId)) {
-            return res.status(400).json({ success: false, message: "ID người dùng không hợp lệ." });
-        }
-        const userObjectId = new mongoose.Types.ObjectId(userId);
-        const expenseAggregation = await Expense.aggregate([
-            { $match: { user_id: userObjectId } }, // Lấy tất cả chi tiêu cá nhân
-            { $group: { _id: null, total: { $sum: "$amount" } } },
-        ]);
-        const totalUserExpenses = expenseAggregation[0]?.total || 0;
-        res.json({ success: true, total: totalUserExpenses });
-    } catch (err) {
-        console.error("❌ Lỗi tính tổng chi tiêu cá nhân:", err);
-        res.status(500).json({ success: false, message: "Lỗi máy chủ khi tính tổng chi tiêu cá nhân." });
+  try {
+    const { userId } = req.params;
+    if (!isValidId(userId)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "ID người dùng không hợp lệ." });
     }
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+    const expenseAggregation = await Expense.aggregate([
+      { $match: { user_id: userObjectId } }, // Lấy tất cả chi tiêu cá nhân
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]);
+    const totalUserExpenses = expenseAggregation[0]?.total || 0;
+    res.json({ success: true, total: totalUserExpenses });
+  } catch (err) {
+    console.error("❌ Lỗi tính tổng chi tiêu cá nhân:", err);
+    res.status(500).json({
+      success: false,
+      message: "Lỗi máy chủ khi tính tổng chi tiêu cá nhân.",
+    });
+  }
 });
-
-
 
 module.exports = router;
