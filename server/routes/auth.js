@@ -118,18 +118,21 @@ router.post("/login", async (req, res) => {
 // POST /api/income
 // ========================
 router.post("/Income", async (req, res) => {
-  const { user_id, amount, source, received_date, note, status } = req.body;
+  const { user_id, amount, source, note, status } = req.body;
 
-  if (!user_id || !amount || !source || !received_date) {
+  if (!user_id || !amount || !source) {
     return res.status(400).json({ message: "Thiếu thông tin bắt buộc" });
   }
 
   try {
+    // Lấy thời điểm thực tế tại server
+    const now = new Date();
+
     const income = new Income({
       user_id,
       amount,
       source,
-      received_date,
+      received_date: now, // Lưu thời điểm thực tế
       note,
       status: status || "pending",
     });
@@ -140,7 +143,7 @@ router.post("/Income", async (req, res) => {
     await TransactionHistory.create({
       transaction_type: "income",
       amount,
-      transaction_date: received_date,
+      transaction_date: now, // Lưu thời điểm thực tế
       description: note || source,
       user_id,
       status: status || "completed",
@@ -756,10 +759,11 @@ router.post("/group-expenses", async (req, res) => {
     await newGroupExpense.save();
 
     // Ghi vào lịch sử giao dịch nhóm
+    const now = new Date();
     await TransactionHistory.create({
       transaction_type: "expense",
       amount: numericAmount,
-      transaction_date: date,
+      transaction_date: now,
       description: description || "Chi tiêu nhóm",
       user_id: user_making_expense_id,
       group_id: groupIdForBalanceCheck,
@@ -1061,6 +1065,66 @@ router.get("/expenses/personal/total/:userId", async (req, res) => {
       success: false,
       message: "Lỗi máy chủ khi tính tổng chi tiêu cá nhân.",
     });
+  }
+});
+
+// GET /api/expenses/personal/monthly-summary/:userId?month=YYYY-MM
+router.get("/expenses/personal/monthly-summary/:userId", async (req, res) => {
+  const { userId } = req.params;
+  const { month } = req.query; // "2025-05"
+  if (!userId || !month) {
+    return res.status(400).json({ message: "Thiếu userId hoặc tháng" });
+  }
+
+  // Tính ngày đầu và cuối tháng
+  const start = new Date(`${month}-01T00:00:00.000Z`);
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + 1);
+
+  try {
+    // Gom nhóm theo category
+    const summary = await Expense.aggregate([
+      {
+        $match: {
+          user_id: new mongoose.Types.ObjectId(userId),
+          date: { $gte: start, $lt: end },
+        },
+      },
+      {
+        $group: {
+          _id: "$category_id",
+          total: { $sum: "$amount" },
+        },
+      },
+      {
+        $lookup: {
+          from: "categories",
+          localField: "_id",
+          foreignField: "_id",
+          as: "category",
+        },
+      },
+      {
+        $unwind: "$category",
+      },
+      {
+        $project: {
+          _id: 0,
+          category_id: "$category._id",
+          category_name: "$category.name",
+          total: 1,
+        },
+      },
+    ]);
+
+    // Tổng chi tiêu tháng
+    const total = summary.reduce((sum, item) => sum + item.total, 0);
+
+    res.json({ total, summary });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ message: "Lỗi máy chủ khi tổng hợp chi tiêu tháng" });
   }
 });
 
