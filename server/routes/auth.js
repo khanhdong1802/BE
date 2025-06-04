@@ -105,7 +105,7 @@ router.post("/login", async (req, res) => {
       user: {
         _id: user._id,
         email: user.email,
-        name: user.name, // Chắc chắn rằng bạn truyền name cùng email
+        name: user.name, 
       },
     });
   } catch (err) {
@@ -238,6 +238,7 @@ router.post("/Withdraw", async (req, res) => {
       return res.status(400).json({ message: "Số dư không đủ để rút" });
     }
 
+    // 1. TẠO BẢN GHI TRONG COLLECTION "Withdraws"
     // Lưu thông tin giao dịch rút tiền
     const withdraw = new Withdraw({
       user_id,
@@ -251,6 +252,7 @@ router.post("/Withdraw", async (req, res) => {
 
     await withdraw.save();
 
+    // 2. TẠO BẢN GHI TRONG COLLECTION "Expenses"
     const newExpense = new Expense({
       user_id,
       amount: amountNum,
@@ -266,13 +268,16 @@ router.post("/Withdraw", async (req, res) => {
     await newExpense.save();
 
     // Ghi vào lịch sử giao dịch
-    await TransactionHistory.create({
+    const newTransaction = await TransactionHistory.create({
       transaction_type: "expense",
       amount: amountNum,
       transaction_date: new Date(),
       description: note || source || "Rút tiền",
       user_id,
       status: "completed",
+      category_id: category_id
+        ? new mongoose.Types.ObjectId(category_id)
+        : null,
     });
 
     res.status(201).json({ message: "Rút tiền thành công", withdraw });

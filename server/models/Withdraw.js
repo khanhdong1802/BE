@@ -23,6 +23,11 @@ const WithdrawSchema = new Schema({
     type: Date,
     default: Date.now,
   },
+  category_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Category", 
+    required: false, 
+  },
 });
 
 module.exports = mongoose.model("Withdraw", WithdrawSchema);

@@ -16,6 +16,11 @@ const TransactionHistorySchema = new Schema({
     type: Date,
     default: Date.now,
   },
+  category_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Category",
+    default: null,
+  },
   description: {
     type: String,
     default: "",
